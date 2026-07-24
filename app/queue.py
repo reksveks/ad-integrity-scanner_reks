@@ -154,3 +154,33 @@ async def get_stats(conn: asyncpg.Connection) -> dict:
         queue.setdefault(r["tier"], {})[r["status"]] = r["n"]
     results = await conn.fetchval("SELECT count(*) FROM scan_results")
     return {"queue": queue, "results_total": results}
+
+
+async def get_active_jobs(conn: asyncpg.Connection, limit: int = 100) -> list[dict]:
+    """Return queued/processing/error jobs for the queue inspector UI."""
+    rows = await conn.fetch(
+        """
+        SELECT id, scan_id, url, domain, tier, status, attempts,
+               enqueued_at, claimed_at, last_error
+        FROM scan_queue
+        WHERE status IN ('queued', 'processing', 'error')
+        ORDER BY enqueued_at DESC
+        LIMIT $1
+        """,
+        limit,
+    )
+    return [
+        {
+            "id": r["id"],
+            "scan_id": str(r["scan_id"]),
+            "url": r["url"],
+            "domain": r["domain"],
+            "tier": r["tier"],
+            "status": r["status"],
+            "attempts": r["attempts"],
+            "enqueued_at": r["enqueued_at"].isoformat() if r["enqueued_at"] else None,
+            "claimed_at": r["claimed_at"].isoformat() if r["claimed_at"] else None,
+            "last_error": r["last_error"],
+        }
+        for r in rows
+    ]

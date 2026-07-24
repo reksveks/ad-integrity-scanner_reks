@@ -57,6 +57,19 @@ async def due_for_rescan(conn: asyncpg.Connection, limit: int) -> list[asyncpg.R
     )
 
 
+async def count_domain_pages(conn: asyncpg.Connection, domain: str) -> int:
+    """Count pages from a domain that have been committed to the ledger.
+
+    Used to enforce crawl_domain_page_budget: once this reaches the budget,
+    no more pages from the domain are enqueued until their TTL expires and
+    the ledger rows are cleaned up.
+    """
+    return await conn.fetchval(
+        "SELECT count(*) FROM scan_ledger WHERE domain = $1",
+        domain,
+    )
+
+
 async def mark_scanned(
     conn: asyncpg.Connection,
     *,

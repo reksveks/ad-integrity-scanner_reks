@@ -11,29 +11,39 @@ from __future__ import annotations
 
 import asyncio
 import random
-import signal
 
 import asyncpg
 import httpx
 
-from app import fetch, queue, results, signals_static
+from app import fetch, queue, results, service, signals_static
 from app.config import Settings, get_settings
 from app.db import close_pool, init_pool
+from app.ledger import count_domain_pages
 from app.logging_config import configure_logging, get_logger, kv
 from app.queue import Job
 from app.scoring import score_static
+from app.workers import setup_signals
 
 _stop = asyncio.Event()
 log = get_logger("worker.static")
 
 
-async def _scan_static(pool: asyncpg.Pool, client: httpx.AsyncClient, job: Job) -> dict:
-    """Collect static signals (domain files + page HTML) and score them."""
+async def _scan_static(
+    pool: asyncpg.Pool, client: httpx.AsyncClient, job: Job
+) -> tuple[dict, list[str]]:
+    """Collect static signals (domain files + page HTML) and score them.
+
+    Returns ``(result, linked_pages)`` where *linked_pages* is the list of
+    same-domain URLs discovered on the page (may be empty).
+    """
     settings = get_settings()
     signals = await signals_static.collect(
         client, pool, url=job.url, domain=job.domain, settings=settings,
     )
-    return score_static(signals)
+    linked_pages: list[str] = (
+        (signals.get("page") or {}).get("content", {}).get("linked_pages") or []
+    )
+    return score_static(signals), linked_pages
 
 
 def _needs_render(settings: Settings) -> bool:
@@ -45,7 +55,7 @@ def _needs_render(settings: Settings) -> bool:
 async def _process(pool: asyncpg.Pool, client: httpx.AsyncClient, job: Job,
                    settings: Settings) -> None:
     try:
-        result = await _scan_static(pool, client, job)
+        result, linked_pages = await _scan_static(pool, client, job)
         async with pool.acquire() as conn:
             await results.persist(conn, job, result, settings)
             if _needs_render(settings):
@@ -53,8 +63,23 @@ async def _process(pool: asyncpg.Pool, client: httpx.AsyncClient, job: Job,
                     conn, scan_id=job.scan_id, url_hash=job.url_hash,
                     url=job.url, domain=job.domain, tier="render",
                 )
+        if settings.crawl_linked_pages and linked_pages:
+            async with pool.acquire() as conn:
+                domain_count = await count_domain_pages(conn, job.domain)
+            budget_remaining = settings.crawl_domain_page_budget - domain_count
+            if budget_remaining <= 0:
+                log.debug("domain page budget exhausted domain=%s count=%d budget=%d",
+                          job.domain, domain_count, settings.crawl_domain_page_budget)
+            else:
+                candidates = linked_pages[:min(settings.crawl_linked_pages_max, budget_remaining)]
+                for linked_url in candidates:
+                    try:
+                        await service.submit_scan(pool, linked_url)
+                    except Exception as crawl_err:  # noqa: BLE001
+                        log.debug("linked-page enqueue skipped url=%r err=%r",
+                                  linked_url, crawl_err)
         log.info("scanned %s", kv(
-            scan_id=job.scan_id, domain=job.domain,
+            scan_id=job.scan_id, domain=job.domain, url=job.url,
             supply=result["sub_scores"].get("supply_chain"),
             ads_txt=result["metrics"].get("ads_txt_present")))
     except Exception as e:  # noqa: BLE001 — record + continue
@@ -99,9 +124,7 @@ async def main() -> None:
     configure_logging(settings.log_level)
     pool = await init_pool()
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _stop.set)
+    setup_signals(_stop)
 
     client = fetch.make_client()
     log.info("started %s", kv(batch=settings.static_worker_batch,

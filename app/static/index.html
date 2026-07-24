@@ -34,14 +34,31 @@
            white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:520px; }
   th { color:var(--mut); font-weight:600; }
   .pill { padding:2px 9px; border-radius:20px; font-size:12px; font-weight:600; }
+  .link-badge { display:inline-block; background:#22305a; color:#9db8ff; border-radius:20px;
+    padding:2px 9px; font-size:12px; font-weight:600; cursor:pointer; }
+  .link-badge:hover { background:#2d3f70; }
+  .links-detail td { background:#131929; padding:10px 14px; }
+  .links-detail ul { margin:0; padding:0 0 0 18px; }
+  .links-detail li { margin:3px 0; font-size:12px; }
+  .links-detail a { color:#9db8ff; text-decoration:none; word-break:break-all; }
+  .links-detail a:hover { text-decoration:underline; }
   .s-queued { background:#22305a; color:#9db8ff; }
   .s-fresh { background:#1d3b30; color:var(--ok); }
   .s-inflight { background:#3a3320; color:var(--warn); }
+  .s-processing { background:#2a2050; color:#c4a8ff; }
+  .s-done { background:#1a2a1a; color:#6abf6a; }
   .s-error { background:#3a2330; color:var(--err); }
   .stats { display:flex; gap:22px; flex-wrap:wrap; }
   .stat b { font-size:18px; }
   .stat span { color:var(--mut); font-size:12px; display:block; }
   .muted { color:var(--mut); font-size:12px; }
+  details > summary { cursor:pointer; font-size:12px; color:var(--mut); font-weight:600;
+    user-select:none; list-style:none; display:flex; align-items:center; gap:6px; }
+  details > summary::before { content:'▶'; font-size:10px; }
+  details[open] > summary::before { content:'▼'; }
+  details > summary::-webkit-details-marker { display:none; }
+  #queue-table { margin-top:10px; }
+  #queue-table td { max-width:320px; }
 </style>
 </head>
 <body>
@@ -83,9 +100,21 @@
   </div>
 
   <div class="card">
+    <details id="queue-inspector">
+      <summary>Queue inspector <span class="muted" id="qi-count"></span>
+        <button class="ghost" id="qi-refresh" style="margin-left:auto;padding:3px 10px;font-size:11px" onclick="event.preventDefault();loadQueueInspector()">Refresh</button>
+      </summary>
+      <table id="queue-table">
+        <thead><tr><th>id</th><th>url</th><th>tier</th><th>status</th><th>attempts</th><th>enqueued</th><th>error</th></tr></thead>
+        <tbody id="qi-rows"><tr><td colspan="7" class="muted">open to load…</td></tr></tbody>
+      </table>
+    </details>
+  </div>
+
+  <div class="card">
     <label>Submissions</label>
     <table>
-      <thead><tr><th>#</th><th>URL</th><th>status</th><th>scan_id</th></tr></thead>
+      <thead><tr><th>#</th><th>URL</th><th>status</th><th>scan_id</th><th>links</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </div>
@@ -117,9 +146,51 @@ function setCounts() {
 
 function addRow(i, url) {
   const tr = document.createElement('tr');
+  tr.id = `row-${i}`;
   tr.innerHTML = `<td>${i+1}</td><td title="${url}">${url}</td>`+
-                 `<td id="st-${i}"><span class="muted">…</span></td><td id="id-${i}" class="muted"></td>`;
+                 `<td id="st-${i}"><span class="muted">…</span></td>`+
+                 `<td id="id-${i}" class="muted"></td>`+
+                 `<td id="lk-${i}" class="muted">—</td>`;
   $('rows').prepend(tr);
+}
+
+function setLinks(i, links) {
+  const cell = $('lk-'+i);
+  if (!links || links.length === 0) { cell.textContent = '0'; return; }
+  cell.innerHTML = `<span class="link-badge" onclick="toggleLinks(${i})">${links.length}</span>`;
+  const detailId = `lkd-${i}`;
+  if (!document.getElementById(detailId)) {
+    const parentRow = $('row-'+i);
+    const detail = document.createElement('tr');
+    detail.id = detailId;
+    detail.className = 'links-detail';
+    detail.style.display = 'none';
+    const items = links.map(u => `<li><a href="${u}" target="_blank" rel="noopener">${u}</a></li>`).join('');
+    detail.innerHTML = `<td colspan="5"><ul>${items}</ul></td>`;
+    parentRow.insertAdjacentElement('afterend', detail);
+  }
+}
+
+function toggleLinks(i) {
+  const d = $('lkd-'+i);
+  if (d) d.style.display = d.style.display === 'none' ? '' : 'none';
+}
+
+async function pollLinks(i, scanId) {
+  const maxAttempts = 30;
+  for (let a = 0; a < maxAttempts; a++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const r = await fetch('/scan/' + scanId);
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j.state === 'done' || j.state === 'error') {
+        const links = (j.metrics || {}).linked_pages || [];
+        setLinks(i, links);
+        return;
+      }
+    } catch (_) {}
+  }
 }
 
 function setStatus(i, status, scanId) {
@@ -159,6 +230,16 @@ $('go').addEventListener('click', async () => {
     counts.sent++;
     setStatus(i, res.status || 'error', res.scan_id);
     setCounts();
+    if (res.scan_id) {
+      if (res.status === 'fresh') {
+        // result already exists — fetch metrics immediately
+        fetch('/scan/' + res.scan_id).then(r => r.json())
+          .then(j => setLinks(i, (j.metrics || {}).linked_pages || []))
+          .catch(() => {});
+      } else {
+        pollLinks(i, res.scan_id);
+      }
+    }
     if (delay) await new Promise(r => setTimeout(r, delay));
   }
   running = false;
@@ -183,6 +264,60 @@ async function pollStats() {
   } catch (e) { $('stats').innerHTML = '<span class="muted">backend unreachable</span>'; }
 }
 pollStats(); setInterval(pollStats, 2000);
+
+async function loadQueueInspector() {
+  const tbody = $('qi-rows');
+  tbody.innerHTML = '<tr><td colspan="7" class="muted">loading…</td></tr>';
+  try {
+    const jobs = await (await fetch('/queue')).json();
+    $('qi-count').textContent = jobs.length ? `(${jobs.length} active)` : '(empty)';
+    if (!jobs.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="muted">no active jobs</td></tr>';
+      return;
+    }
+    tbody.innerHTML = jobs.map(j => {
+      const age = j.enqueued_at ? timeSince(j.enqueued_at) : '—';
+      const err = j.last_error ? `<span title="${escHtml(j.last_error)}" style="cursor:help">&#9888;</span>` : '—';
+      return `<tr>
+        <td class="muted">${j.id}</td>
+        <td title="${escHtml(j.url)}">${escHtml(j.url)}</td>
+        <td>${j.tier}</td>
+        <td><span class="pill s-${j.status}">${j.status}</span></td>
+        <td>${j.attempts}</td>
+        <td class="muted">${age}</td>
+        <td>${err}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="7" class="muted">failed to load</td></tr>';
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function timeSince(iso) {
+  const sec = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec/60)}m ago`;
+  return `${Math.floor(sec/3600)}h ago`;
+}
+
+$('queue-inspector').addEventListener('toggle', () => {
+  if ($('queue-inspector').open) loadQueueInspector();
+});
+
+let _qiInterval = null;
+$('queue-inspector').addEventListener('toggle', () => {
+  if ($('queue-inspector').open) {
+    loadQueueInspector();
+    _qiInterval = setInterval(loadQueueInspector, 3000);
+  } else {
+    clearInterval(_qiInterval);
+    _qiInterval = null;
+  }
+});
 </script>
 </body>
 </html>

@@ -13,6 +13,22 @@ from collections.abc import AsyncIterator
 from urllib.parse import urlsplit
 
 from playwright.async_api import Browser, Page, Playwright, async_playwright
+try:
+    from playwright_stealth import stealth_async, StealthConfig as _StealthConfig
+    # Only apply the patches that defeat headless-browser fingerprinting.
+    # chrome_runtime and chrome_app are disabled because GPT and many CMPs test
+    # for window.chrome / window.chrome.runtime; patching those stops consent
+    # dialogs and the whole ad stack from initialising.
+    # iframe_content_window is disabled because TCF consent frames communicate
+    # through iframe content-window access — patching it breaks __tcfapi.
+    _STEALTH_CFG = _StealthConfig(
+        chrome_runtime=False,
+        chrome_app=False,
+        iframe_content_window=False,
+    )
+    _STEALTH_AVAILABLE = True
+except ImportError:
+    _STEALTH_AVAILABLE = False
 
 from app.config import get_settings
 from app.render.instrument import INIT_JS
@@ -35,8 +51,10 @@ def _make_route_handler(blocked_types: set[str]):
 
 
 class RenderPool:
-    def __init__(self, concurrency: int = 2, blocked_types: set[str] | None = None) -> None:
+    def __init__(self, concurrency: int = 2, blocked_types: set[str] | None = None,
+                 headless: bool = True) -> None:
         self._concurrency = concurrency
+        self._headless = headless
         # Default blocks fonts/media only — images are kept so page-weight stays
         # accurate (a headline metric). Pass {'image','font','media'} to trade
         # accuracy for lower bandwidth.
@@ -52,7 +70,7 @@ class RenderPool:
         # Keep Chromium's sandbox ON — we render hostile pages, so --no-sandbox
         # would remove the last barrier between a browser exploit and the host.
         self._browser = await self._pw.chromium.launch(
-            headless=True,
+            headless=self._headless,
             args=["--disable-dev-shm-usage"],
         )
         self._sem = asyncio.Semaphore(self._concurrency)
@@ -64,11 +82,24 @@ class RenderPool:
             await self._pw.stop()
         self._browser = self._pw = None
 
+    async def _restart_browser(self) -> None:
+        """Relaunch Chromium after a crash."""
+        with contextlib.suppress(Exception):
+            if self._browser:
+                await self._browser.close()
+        self._browser = await self._pw.chromium.launch(
+            headless=self._headless,
+            args=["--disable-dev-shm-usage"],
+        )
+
     @contextlib.asynccontextmanager
     async def page(self) -> AsyncIterator[Page]:
         if not self._browser or not self._sem:
             raise RuntimeError("RenderPool not started")
         async with self._sem:
+            # If the browser process crashed, relaunch it before attempting a new context.
+            if not self._browser.is_connected():
+                await self._restart_browser()
             context = await self._browser.new_context(
                 user_agent=get_settings().user_agent,
                 viewport=_VIEWPORT,
@@ -77,6 +108,8 @@ class RenderPool:
             try:
                 await context.route("**/*", self._route)
                 page = await context.new_page()
+                if get_settings().render_stealth and _STEALTH_AVAILABLE:
+                    await stealth_async(page, _STEALTH_CFG)
                 await page.add_init_script(INIT_JS)
                 yield page
             finally:

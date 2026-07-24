@@ -68,3 +68,10 @@ async def stats() -> dict:
     """Queue depth by tier/status + total completed results."""
     async with get_pool().acquire() as conn:
         return await queue.get_stats(conn)
+
+
+@app.get("/queue")
+async def queue_jobs() -> list[dict]:
+    """Active queue jobs (queued / processing / error) for the inspector UI."""
+    async with get_pool().acquire() as conn:
+        return await queue.get_active_jobs(conn)

@@ -58,6 +58,40 @@ class Settings(BaseSettings):
     render_concurrency: int = 6   # parallel browser contexts (tuned for M4/10-core/32GB)
     render_dwell_ms: int = 8000   # longer dwell improves refresh + viewability capture
     render_samples: int = 1       # >1 = render N times, take median CLS (N× cost)
+    # Set False to show the browser window — useful for debugging bot-detection issues.
+    render_headless: bool = False
+    # When True, apply playwright-stealth patches to reduce headless-browser fingerprinting.
+    # chrome_runtime/chrome_app/iframe_content_window patches are intentionally left off
+    # so GPT and TCF-based CMPs still initialise correctly.
+    render_stealth: bool = False
+    # When True, attempt to auto-accept cookie/CMP banners before collecting signals
+    # so the ad stack loads with consent granted.
+    render_accept_cmp: bool = True
+
+    # AdmantX proactive pull: set token to enable. Empty string = disabled.
+    # Pull runs concurrently during the render dwell so it adds no extra latency.
+    admantx_token: str = ""
+    admantx_max_attempts: int = 5
+
+    # DoubleVerify proactive pull: set token to enable. Empty string = disabled.
+    # Pull runs concurrently during the render dwell so it adds no extra latency.
+    doubleverify_token: str = ""
+    doubleverify_max_attempts: int = 5
+
+    # When True, links discovered on each scanned page are submitted to the queue
+    # (same-domain only, deduplicated via the normal TTL ledger). Disabled by
+    # default to prevent unbounded crawling.
+    crawl_linked_pages: bool = False
+    crawl_linked_pages_max: int = 100   # max links to enqueue from a single page
+    crawl_domain_page_budget: int = 250  # max pages from one domain ever committed to the
+                                        # ledger; once reached no more pages from that
+                                        # domain are enqueued until the TTL resets
+
+    # Browser channel for rendering: "chromium" (playwright bundled, default),
+    # "chrome" (requires `playwright install chrome` — better Cloudflare evasion),
+    # "msedge", etc.  Set AI_RENDER_BROWSER_CHANNEL=chrome in .env to enable.
+    render_browser_channel: str = "chromium"
+
     # Resource types aborted during render. Default keeps images (accurate page
     # weight); add 'image' to cut bandwidth at the cost of weight accuracy.
     render_block_resources: str = "font,media"

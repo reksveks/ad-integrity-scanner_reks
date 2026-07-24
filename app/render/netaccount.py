@@ -31,6 +31,50 @@ _AD_HOST_RE = re.compile(
     r"(googlesyndication|doubleclick|amazon-adsystem|adnxs|criteo|rubiconproject"
     r"|pubmatic|adsrvr|3lift|sharethrough|smartadserver|teads|adform|openx"
     r"|casalemedia|33across|gampad|adsystem)", re.I)
+
+# Prebid auction / OpenRTB bid-request endpoints.  Matches the URL path so it
+# fires regardless of which SSP host the Prebid adapter calls.
+_PREBID_AUCTION_RE = re.compile(
+    r"(/openrtb2/auction|/openrtb2/amp|/pbs/v1/openrtb"
+    r"|/ut/v3/prebid|/prebid/auction|/prebid\.js"
+    r"|[?&]pbjs|/openrtb/bids|/bid\?.*pbjs"
+    r"|prebid\.adnxs\.com|prebid\-server\.rubiconproject\.com"
+    r"|prebid\.a-mo\.net|prebid\.media\.net"
+    r"|ib\.adnxs\.com/ut/v3"
+    r"|exchange\.mediavine\.com/openrtb"
+    r"|ix\.com/api/openrtb)", re.I)
+
+# Contextual-intelligence / brand-safety / semantic-targeting vendors.
+_CONTEXTUAL_DOMAINS: frozenset[str] = frozenset({
+    # AdmantX (contextual signals)
+    "admantx.com",
+    # Illuma Technology (semantic targeting)
+    "illumatechnology.com", "illuma.io",
+    # Peer39 / Sizmek contextual
+    "peer39.com",
+    # Oracle/Grapeshot brand safety
+    "grapeshot.co.uk", "oracle.com",
+    # ContextWeb / Pulsepoint
+    "contextweb.com",
+    # 1plusX (first-party data + contextual)
+    "1plusx.com",
+    # Permutive (audience + contextual)
+    "permutive.com",
+    # Browsi (AI contextual / viewability)
+    "browsi.com",
+    # Seedtag contextual
+    "seedtag.com",
+    # GumGum (contextual in-image/video)
+    "gumgum.com",
+    # Comscore brand safety
+    "comscore.com",
+    # Integral Ad Science (IAS) brand safety / contextual
+    "integralads.com", "adsafeprotected.com",
+    # DoubleVerify brand safety
+    "doubleverify.com",
+    # Moat / Oracle viewability/contextual
+    "moat.com",
+})
 # Curated tracker domains (registrable). A drop-in for DuckDuckGo Tracker Radar /
 # Disconnect services.json later; conservative but covers the common set.
 _TRACKER_DOMAINS = {
@@ -86,6 +130,9 @@ class NetworkAccountant:
         tracker_categories: dict[str, int] = {}
         ad_requests = 0
         hosts: set[str] = set()
+        prebid_calls: list[dict] = []
+        contextual_calls: list[dict] = []
+        _MAX_CAPTURED = 50  # per-category URL cap to bound signal size
         db = _tracker_db()
         for rid, meta in self._meta.items():
             b = self._bytes.get(rid, 0)
@@ -112,6 +159,12 @@ class NetworkAccountant:
                     tracker_entities.add(reg)
             if _AD_HOST_RE.search(url):
                 ad_requests += 1
+            if _PREBID_AUCTION_RE.search(url) and len(prebid_calls) < _MAX_CAPTURED:
+                prebid_calls.append({"url": url, "bytes": b})
+            if reg in _CONTEXTUAL_DOMAINS and len(contextual_calls) < _MAX_CAPTURED:
+                contextual_calls.append({"url": url, "domain": reg, "bytes": b})
+        # Deduplicate contextual calls by domain for the summary counts.
+        contextual_domains_seen = sorted({c["domain"] for c in contextual_calls})
         return {
             "request_count": len(self._meta),
             "page_weight_bytes": total,
@@ -123,6 +176,11 @@ class NetworkAccountant:
             "tracker_entities": sorted(tracker_entities)[:40],
             "tracker_categories": tracker_categories,
             "ad_request_count": ad_requests,
+            "prebid_auction_calls": prebid_calls,
+            "prebid_auction_count": len(prebid_calls),
+            "contextual_calls": contextual_calls,
+            "contextual_domains": contextual_domains_seen,
+            "contextual_call_count": len(contextual_calls),
             "source": "cdp",
             "request_overflow": self._overflow,
         }

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import signal
 
 import asyncpg
 
@@ -23,6 +22,7 @@ from app.queue import Job
 from app.render.browser import RenderPool
 from app.render.collect import render_page_sampled
 from app.scoring import assemble
+from app.workers import setup_signals
 
 _stop = asyncio.Event()
 log = get_logger("worker.render")
@@ -71,7 +71,13 @@ async def _scan_render(pool: asyncpg.Pool, render_pool: RenderPool, job: Job) ->
     async with pool.acquire() as conn:
         signals = await _load_static_signals(conn, job.scan_id)
     render_data = await render_page_sampled(
-        render_pool, job.url, dwell_ms=settings.render_dwell_ms, samples=settings.render_samples)
+        render_pool, job.url, dwell_ms=settings.render_dwell_ms, samples=settings.render_samples,
+        accept_consent=settings.render_accept_cmp,
+        admantx_token=settings.admantx_token,
+        admantx_max_attempts=settings.admantx_max_attempts,
+        doubleverify_token=settings.doubleverify_token,
+        doubleverify_max_attempts=settings.doubleverify_max_attempts,
+    )
     signals["render"] = render_data
     if render_data.get("ok"):
         _backfill_content(signals, render_data)
@@ -85,8 +91,21 @@ async def _process(pool: asyncpg.Pool, render_pool: RenderPool, job: Job) -> Non
         async with pool.acquire() as conn:
             await results.persist(conn, job, result, settings)
         m = result["metrics"]
+        res = (result.get("signals") or {}).get("render", {}).get("resources") or {}
+        if res.get("prebid_auction_count"):
+            log.info("prebid auctions %s", kv(
+                scan_id=job.scan_id, domain=job.domain,
+                count=res["prebid_auction_count"],
+                urls=[c["url"] for c in res.get("prebid_auction_calls", [])],
+            ))
+        if res.get("contextual_call_count"):
+            log.info("contextual providers %s", kv(
+                scan_id=job.scan_id, domain=job.domain,
+                count=res["contextual_call_count"],
+                domains=res.get("contextual_domains", []),
+            ))
         log.info("rendered %s", kv(
-            scan_id=job.scan_id, domain=job.domain, tier=result["scan_tier"],
+            scan_id=job.scan_id, domain=job.domain, url=job.url, tier=result["scan_tier"],
             slots=m.get("ad_slot_count"), a2cr=m.get("a2cr"),
             lcp=m.get("lcp_ms"), score=result["integrity_score"]))
     except Exception as e:  # noqa: BLE001
@@ -115,12 +134,12 @@ async def main() -> None:
     configure_logging(settings.log_level)
     pool = await init_pool()
     blocked = {t.strip() for t in settings.render_block_resources.split(",") if t.strip()}
-    render_pool = RenderPool(concurrency=settings.render_concurrency, blocked_types=blocked)
+    render_pool = RenderPool(concurrency=settings.render_concurrency, blocked_types=blocked,
+                             headless=settings.render_headless,
+                             channel=settings.render_browser_channel)
     await render_pool.start()
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _stop.set)
+    setup_signals(_stop)
 
     log.info("started %s", kv(concurrency=settings.render_concurrency,
                               dwell_ms=settings.render_dwell_ms))

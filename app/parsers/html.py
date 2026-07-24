@@ -6,6 +6,7 @@ the render tier (Phase 2). Detections here are therefore *declared/likely* signa
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -41,6 +42,13 @@ _VIDEO_PLAYERS = {
     "hls.js": "hlsjs", "flowplayer": "flowplayer", "kaltura": "kaltura",
 }
 
+_CONTEXTUAL_PROVIDERS = {
+    'adsafeproducted': 'integraladscience',
+    'admantx': 'integraladscience',
+    'doubleverify': 'doubleverify',
+    'illuma-api': 'illuma',
+}
+
 
 def _registrable(netloc: str) -> str | None:
     host = netloc.split("@")[-1].split(":")[0].lower()
@@ -53,6 +61,40 @@ def _detect(haystack: str, table: dict[str, str]) -> list[str]:
     found = {v for k, v in table.items() if k in haystack}
     return sorted(found)
 
+_SKIP_EXTENSIONS = re.compile(
+    r"\.(jpg|jpeg|png|gif|webp|svg|mp4|avi|mov|wmv|pdf|zip|gz|exe)([?#]|$)",
+    re.IGNORECASE,
+)
+
+
+def _getlinkedpages(html: str, page_domain: str) -> list[str]:
+    domain = page_domain.split("/")
+    tree = HTMLParser(html or "")
+    links = tree.css("a[href]")
+    article_links = []
+    for link in links:
+        href = link.attributes.get("href")
+        if href and not href.startswith("#") and not href.startswith("mailto:"):
+            if href.startswith("/"):
+                article_links.append(domain[0] + href)
+            elif href.startswith("http"):
+                article_links.append(href)
+
+    article_links = list(set(article_links))
+    article_links = [l for l in article_links if page_domain in l]
+
+    # custom filtering to remove links that are not relevant to scrapping, such as links to social media, login pages, etc.
+    links_to_remove = ["login", "signup", "register", "rss/index.xml"]
+    article_links = [l for l in article_links if not any(x in l for x in links_to_remove)]
+
+    # custom filter to remove links to images, videos, and other binary files
+    article_links = [l for l in article_links if not _SKIP_EXTENSIONS.search(l)]
+
+    # custom filter to remove links to various social media platforms
+    social_media_domains = ["facebook.com", "twitter.com", "instagram.com", "linkedin.com", "youtube.com", "pinterest.com", "tiktok.com", "x.com", "whatsapp.com"]
+    article_links = [l for l in article_links if not any(domain in l for domain in social_media_domains)]
+
+    return article_links
 
 def parse_html(html: str, *, page_domain: str | None = None) -> dict[str, Any]:
     tree = HTMLParser(html or "")
@@ -104,6 +146,10 @@ def parse_html(html: str, *, page_domain: str | None = None) -> dict[str, Any]:
     text = body.text(separator=" ", strip=True) if body else ""
     word_count = len(text.split())
 
+    # Determine aricle links
+    linked_pages = _getlinkedpages(html, page_domain) if page_domain else []
+
+
     # Content-quality / templating signals (thin + link-dense => MFA-leaning).
     paragraph_count = len(tree.css("p"))
     heading_count = len(tree.css("h1, h2, h3"))
@@ -111,7 +157,13 @@ def parse_html(html: str, *, page_domain: str | None = None) -> dict[str, Any]:
     link_to_text_ratio = round(link_count / word_count, 4) if word_count else 0.0
     content_analysis = content_mod.analyze(text, title=title)
 
+
+
+
+
+
     ad_tech = _detect(code, _AD_TECH)
+    contextual_providers = _detect(code, _CONTEXTUAL_PROVIDERS)
     native_widgets = _detect(code, _NATIVE_WIDGETS)
     video_players = _detect(code, _VIDEO_PLAYERS)
     native_video_tags = len(tree.css("video"))
@@ -139,6 +191,7 @@ def parse_html(html: str, *, page_domain: str | None = None) -> dict[str, Any]:
             "external_script_domains": sorted(ext_domains),
             "external_script_domain_count": len(ext_domains),
             "ad_related_domain_count": len(ad_related_ext),
+            "linked_pages": linked_pages,
             "quality": {
                 "paragraph_count": paragraph_count,
                 "heading_count": heading_count,
@@ -156,6 +209,7 @@ def parse_html(html: str, *, page_domain: str | None = None) -> dict[str, Any]:
             "has_amazon_aps": "amazon-aps" in ad_tech,
             "ssp_count": len([v for v in ad_tech if v not in ("google-adsense",)]),
             "native_widgets": native_widgets,
+            "contextual_providers": contextual_providers,
         },
         "video": {
             "players": video_players,

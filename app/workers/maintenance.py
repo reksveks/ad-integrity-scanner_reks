@@ -10,7 +10,6 @@ Run: python -m app.workers.maintenance
 from __future__ import annotations
 
 import asyncio
-import signal
 
 import asyncpg
 
@@ -18,6 +17,7 @@ from app import ledger, queue, service
 from app.config import Settings, get_settings
 from app.db import close_pool, init_pool
 from app.logging_config import configure_logging, get_logger, kv
+from app.workers import setup_signals
 
 _stop = asyncio.Event()
 log = get_logger("worker.maintenance")
@@ -52,9 +52,7 @@ async def main() -> None:
     configure_logging(settings.log_level)
     pool = await init_pool()
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _stop.set)
+    setup_signals(_stop)
 
     log.info("started %s", kv(interval=settings.maintenance_interval_seconds,
                               visibility_timeout=settings.visibility_timeout_seconds,

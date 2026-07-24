@@ -311,6 +311,7 @@ def _flatten_metrics(signals: dict[str, Any]) -> dict[str, Any]:
         "link_to_text_ratio": (content.get("quality") or {}).get("link_to_text_ratio"),
         "content_category": content.get("category"),
         "content_source": content.get("content_source", "static") if content else None,
+        "linked_pages": content.get("linked_pages") or [],
         "suitability_tier": suit.get("risk_tier"),
         "suitability_flags": suit.get("flagged_categories"),
         "has_gpt": ad_tech.get("has_gpt"),
