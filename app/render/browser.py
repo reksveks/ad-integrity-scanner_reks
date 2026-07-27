@@ -52,9 +52,10 @@ def _make_route_handler(blocked_types: set[str]):
 
 class RenderPool:
     def __init__(self, concurrency: int = 2, blocked_types: set[str] | None = None,
-                 headless: bool = True) -> None:
+                 headless: bool = True, channel: str = "chromium") -> None:
         self._concurrency = concurrency
         self._headless = headless
+        self._channel = channel
         # Default blocks fonts/media only — images are kept so page-weight stays
         # accurate (a headline metric). Pass {'image','font','media'} to trade
         # accuracy for lower bandwidth.
@@ -69,10 +70,10 @@ class RenderPool:
         self._pw = await async_playwright().start()
         # Keep Chromium's sandbox ON — we render hostile pages, so --no-sandbox
         # would remove the last barrier between a browser exploit and the host.
-        self._browser = await self._pw.chromium.launch(
-            headless=self._headless,
-            args=["--disable-dev-shm-usage"],
-        )
+        launch_kwargs: dict = {"headless": self._headless, "args": ["--disable-dev-shm-usage"]}
+        if self._channel and self._channel != "chromium":
+            launch_kwargs["channel"] = self._channel
+        self._browser = await self._pw.chromium.launch(**launch_kwargs)
         self._sem = asyncio.Semaphore(self._concurrency)
 
     async def stop(self) -> None:
@@ -87,10 +88,10 @@ class RenderPool:
         with contextlib.suppress(Exception):
             if self._browser:
                 await self._browser.close()
-        self._browser = await self._pw.chromium.launch(
-            headless=self._headless,
-            args=["--disable-dev-shm-usage"],
-        )
+        launch_kwargs: dict = {"headless": self._headless, "args": ["--disable-dev-shm-usage"]}
+        if self._channel and self._channel != "chromium":
+            launch_kwargs["channel"] = self._channel
+        self._browser = await self._pw.chromium.launch(**launch_kwargs)
 
     @contextlib.asynccontextmanager
     async def page(self) -> AsyncIterator[Page]:
