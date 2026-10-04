@@ -98,7 +98,7 @@ class googleNewsRSS:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fetch top articles from NewsAPI and save to CSV.")
     parser.add_argument("--country", type=str, default="gb", help="Country code for top headlines (default: us)")
-    parser.add_argument("--page_size", type=int, default=10, help="Number of articles to fetch (default: 10)")
+    parser.add_argument("--page_size", type=int, default=100, help="Number of articles to fetch (default: 10)")
     parser.add_argument("--output", type=str, default="top_articles.csv", help="Output CSV file name (default: top_articles.csv)")
     args = parser.parse_args()
 
@@ -124,7 +124,6 @@ if __name__ == "__main__":
                     {"rank": 8, "name": "Daily Express", "domain": "express.co.uk", "audience_millions": 18.11},
                     {"rank": 9, "name": "The Telegraph", "domain": "telegraph.co.uk", "audience_millions": 18.18},
                     {"rank": 10, "name": "Yahoo News UK", "domain": "uk.news.yahoo.com", "audience_millions": 17.3},
-
                     {"rank": 11, "name": "Metro", "domain": "metro.co.uk", "audience_millions": 15.0},
                     {"rank": 12, "name": "MoneySavingExpert", "domain": "moneysavingexpert.com", "audience_millions": 15.0},
                     {"rank": 13, "name": "ITV News", "domain": "itv.com/news", "audience_millions": 14.0},
@@ -135,7 +134,6 @@ if __name__ == "__main__":
                     {"rank": 18, "name": "Wales Online", "domain": "walesonline.co.uk", "audience_millions": 7.9},
                     {"rank": 19, "name": "Manchester Evening News", "domain": "manchestereveningnews.co.uk", "audience_millions": 10.0},
                     {"rank": 20, "name": "GB News", "domain": "gbnews.com", "audience_millions": 6.3},
-
                     {"rank": 21, "name": "Examiner Live", "domain": "examinerlive.co.uk", "audience_millions": 3.8},
                     {"rank": 22, "name": "MyLondon", "domain": "mylondon.news", "audience_millions": 3.3},
                     {"rank": 23, "name": "Nottinghamshire Live", "domain": "nottinghamshirelive.co.uk", "audience_millions": 4.6},
@@ -149,7 +147,7 @@ if __name__ == "__main__":
     for source in news_sources:
         print(f"Fetching top articles from {source['name']} ({source['domain']})...")
         articles = news_api.fetch_top_articles(country=args.country, source=source["domain"])
-        total_articles.extend(articles)
+        total_articles.extend(articles[:10])  # Limit to first 10 articles for testing
     
     cleaned_articles = []
 

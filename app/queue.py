@@ -21,6 +21,7 @@ class Job:
     domain: str
     tier: str
     attempts: int
+    depth: int = 0
 
 
 async def find_inflight(conn: asyncpg.Connection, url_hash: str) -> uuid.UUID | None:
@@ -45,13 +46,14 @@ async def enqueue(
     url: str,
     domain: str,
     tier: str = "static",
+    depth: int = 0,
 ) -> None:
     await conn.execute(
         """
-        INSERT INTO scan_queue (scan_id, url_hash, url, domain, tier)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO scan_queue (scan_id, url_hash, url, domain, tier, depth)
+        VALUES ($1, $2, $3, $4, $5, $6)
         """,
-        scan_id, url_hash, url, domain, tier,
+        scan_id, url_hash, url, domain, tier, depth,
     )
 
 
@@ -70,7 +72,7 @@ async def claim(conn: asyncpg.Connection, *, tier: str, batch: int) -> list[Job]
             FOR UPDATE SKIP LOCKED
             LIMIT $2
         )
-        RETURNING id, scan_id, url_hash, url, domain, tier, attempts
+        RETURNING id, scan_id, url_hash, url, domain, tier, attempts, depth
         """,
         tier, batch,
     )
@@ -78,6 +80,7 @@ async def claim(conn: asyncpg.Connection, *, tier: str, batch: int) -> list[Job]
         Job(
             id=r["id"], scan_id=r["scan_id"], url_hash=r["url_hash"],
             url=r["url"], domain=r["domain"], tier=r["tier"], attempts=r["attempts"],
+            depth=r["depth"],
         )
         for r in rows
     ]

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import tldextract
 from selectolax.parser import HTMLParser
@@ -67,36 +67,37 @@ _SKIP_EXTENSIONS = re.compile(
 )
 
 
-def _getlinkedpages(html: str, page_domain: str) -> list[str]:
-    domain = page_domain.split("/")
-    tree = HTMLParser(html or "")
-    links = tree.css("a[href]")
-    article_links = []
-    for link in links:
-        href = link.attributes.get("href")
-        if href and not href.startswith("#") and not href.startswith("mailto:"):
-            if href.startswith("/"):
-                article_links.append(domain[0] + href)
-            elif href.startswith("http"):
-                article_links.append(href)
+_SKIP_PATH_PARTS = ("login", "signup", "register", "rss/index.xml")
 
-    article_links = list(set(article_links))
-    article_links = [l for l in article_links if page_domain in l]
 
-    # custom filtering to remove links that are not relevant to scrapping, such as links to social media, login pages, etc.
-    links_to_remove = ["login", "signup", "register", "rss/index.xml"]
-    article_links = [l for l in article_links if not any(x in l for x in links_to_remove)]
+def _getlinkedpages(html: str, page_domain: str, base_url: str | None = None) -> list[str]:
+    """Same-registrable-domain http(s) links, resolved against *base_url*, in page order."""
+    base = base_url or f"https://{page_domain}/"
+    seen: set[str] = set()
+    links: list[str] = []
+    for node in HTMLParser(html or "").css("a[href]"):
+        href = (node.attributes.get("href") or "").strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        try:
+            parts = urlsplit(urljoin(base, href))
+        except ValueError:
+            continue
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            continue
+        if _registrable(parts.netloc) != page_domain:
+            continue
+        if _SKIP_EXTENSIONS.search(parts.path) or any(p in parts.path.lower() for p in _SKIP_PATH_PARTS):
+            continue
+        url = parts._replace(fragment="").geturl()
+        if url not in seen:
+            seen.add(url)
+            links.append(url)
+    return links
 
-    # custom filter to remove links to images, videos, and other binary files
-    article_links = [l for l in article_links if not _SKIP_EXTENSIONS.search(l)]
-
-    # custom filter to remove links to various social media platforms
-    social_media_domains = ["facebook.com", "twitter.com", "instagram.com", "linkedin.com", "youtube.com", "pinterest.com", "tiktok.com", "x.com", "whatsapp.com"]
-    article_links = [l for l in article_links if not any(domain in l for domain in social_media_domains)]
-
-    return article_links
-
-def parse_html(html: str, *, page_domain: str | None = None) -> dict[str, Any]:
+def parse_html(
+    html: str, *, page_domain: str | None = None, base_url: str | None = None
+) -> dict[str, Any]:
     tree = HTMLParser(html or "")
 
     title_node = tree.css_first("title")
@@ -147,7 +148,7 @@ def parse_html(html: str, *, page_domain: str | None = None) -> dict[str, Any]:
     word_count = len(text.split())
 
     # Determine aricle links
-    linked_pages = _getlinkedpages(html, page_domain) if page_domain else []
+    linked_pages = _getlinkedpages(html, page_domain, base_url) if page_domain else []
 
 
     # Content-quality / templating signals (thin + link-dense => MFA-leaning).

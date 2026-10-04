@@ -54,9 +54,9 @@ async def _collect_domain(
         "ads_txt": ads_txt,
         "app_ads_txt": app_ads_txt,
         "robots_txt": _parse_robots(robots.text) if robots.ok else {"present": False},
+        "header_bidder": None, # Will be populated later using the url level signals
         "supply_paths": supply_paths,
     }
-
 
 async def collect(
     client: httpx.AsyncClient,
@@ -77,7 +77,9 @@ async def collect(
             await domain_cache.put(conn, domain, domain_signals, settings.domain_ttl_seconds)
 
     page = await fetch.fetch(client, url)  # network, no DB conn held
-    page_signals = parse_html(page.text, page_domain=domain) if page.ok else {}
+    page_signals = parse_html(
+        page.text, page_domain=domain, base_url=page.final_url or url,
+    ) if page.ok else {}
 
     return {
         "fetch": {

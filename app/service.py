@@ -15,14 +15,19 @@ from app.normalize import normalize_url
 log = get_logger("service")
 
 
-async def submit_scan(pool: asyncpg.Pool, raw_url: str) -> ScanAccepted:
-    """Normalize, dedup against the tiered TTL ledger, and enqueue if needed."""
+async def submit_scan(
+    pool: asyncpg.Pool, raw_url: str, *, depth: int = 0, force: bool = False
+) -> ScanAccepted:
+    """Normalize, dedup against the tiered TTL ledger, and enqueue if needed.
+
+    ``force`` skips the freshness check (an in-flight scan is still reused).
+    """
     settings = get_settings()
     norm = normalize_url(raw_url, strip_tracking=settings.strip_tracking_params)
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            fresh = await ledger.get_fresh(conn, norm.url_hash)
+            fresh = None if force else await ledger.get_fresh(conn, norm.url_hash)
             if fresh is not None:
                 return ScanAccepted(
                     scan_id=fresh["last_scan_id"], url=norm.url,
@@ -43,7 +48,7 @@ async def submit_scan(pool: asyncpg.Pool, raw_url: str) -> ScanAccepted:
             )
             await queue.enqueue(
                 conn, scan_id=scan_id, url_hash=norm.url_hash,
-                url=norm.url, domain=norm.domain, tier="static",
+                url=norm.url, domain=norm.domain, tier="static", depth=depth,
             )
             log.info("queued %s", kv(scan_id=scan_id, domain=norm.domain,
                                      url_hash=norm.url_hash[:12]))

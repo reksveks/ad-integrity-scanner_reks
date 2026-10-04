@@ -46,6 +46,84 @@ _COMMON_TEXT = [
     "Consent", "Accept cookies", "Accept & Close",
 ]
 
+import re
+
+_ACCEPT_PATTERNS = [
+    # English
+    r"\baccept\b",
+    r"\bagree\b",
+    r"\ballow\b",
+    r"\bconsent\b",
+    r"\bi accept\b",
+    r"\bok\b",
+    r"\bcontinue\b",
+
+    # French
+    r"tout accepter",
+    r"\baccepter\b",
+    r"j'accepte",
+    r"autoriser",
+
+    # German
+    r"alle akzeptieren",
+    r"\bakzeptieren\b",
+    r"ich stimme zu",
+    r"zustimmen",
+    r"einverstanden",
+
+    # Spanish
+    r"aceptar",
+    r"aceptar todo",
+    r"aceptar todos",
+    r"estoy de acuerdo",
+
+    # Italian
+    r"accetta",
+    r"accetta tutto",
+    r"accetto",
+
+    # Dutch
+    r"alles accepteren",
+    r"accepteren",
+    r"ik ga akkoord",
+
+    # Portuguese
+    r"aceitar",
+    r"aceitar tudo",
+    r"concordo",
+
+    # Nordic
+    r"acceptera",
+    r"acceptera alla",
+    r"accepter alle",
+    r"godta",
+    r"godta alle",
+    r"hyväksy",
+    r"hyväksy kaikki",
+
+    # Eastern Europe
+    r"zaakceptuj",
+    r"zaakceptuj wszystkie",
+    r"prijmout",
+    r"elfogad",
+    r"acceptă",
+
+    # Greek
+    r"αποδοχή",
+    r"συμφωνώ",
+
+    # Turkish
+    r"kabul et",
+    r"tümünü kabul et",
+
+    # Russian
+    r"принять",
+    r"принять все",
+
+    # Arabic
+    r"قبول",
+    r"قبول الكل",
+]
 
 async def _click_selector(page_or_frame, selector: str) -> bool:
     try:
@@ -59,16 +137,38 @@ async def _click_selector(page_or_frame, selector: str) -> bool:
 
 
 async def _click_text(page_or_frame) -> bool:
-    for text in _COMMON_TEXT:
+    #
+    # Try buttons first
+    #
+    for pattern in _ACCEPT_PATTERNS:
         try:
-            loc = page_or_frame.locator(f"button:has-text('{text}')")
+            loc = page_or_frame.get_by_role(
+                "button",
+                name=re.compile(pattern, re.IGNORECASE),
+            )
+
             if await loc.count() > 0:
                 await loc.first.click(timeout=2000)
                 return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
-    return False
 
+    #
+    # Fallback to generic clickable elements
+    #
+    for pattern in _ACCEPT_PATTERNS:
+        try:
+            loc = page_or_frame.locator(
+                f"text=/{pattern}/i"
+            )
+
+            if await loc.count() > 0:
+                await loc.first.click(timeout=2000)
+                return True
+        except Exception:
+            pass
+
+    return False
 
 async def accept_cmp(page: Page) -> bool:
     """Attempt to dismiss a cookie/consent banner.  Returns True if accepted."""

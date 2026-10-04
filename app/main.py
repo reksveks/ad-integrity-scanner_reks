@@ -49,7 +49,7 @@ async def healthz() -> dict[str, str]:
 async def scan(req: ScanRequest, response: Response) -> ScanAccepted:
     """Accept a URL, dedup/enqueue, return 202 immediately (fire-and-forget)."""
     try:
-        accepted = await service.submit_scan(get_pool(), req.url)
+        accepted = await service.submit_scan(get_pool(), req.url, force=req.force)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"invalid url: {e}") from e
     # A 'fresh' hit is a cached read, not new work — reflect that in the status code.

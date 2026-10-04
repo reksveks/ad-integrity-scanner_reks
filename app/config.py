@@ -79,11 +79,11 @@ class Settings(BaseSettings):
     doubleverify_max_attempts: int = 5
 
     # When True, links discovered on each scanned page are submitted to the queue
-    # (same-domain only, deduplicated via the normal TTL ledger). Disabled by
-    # default to prevent unbounded crawling.
-    crawl_linked_pages: bool = False
-    crawl_linked_pages_max: int = 100   # max links to enqueue from a single page
-    crawl_domain_page_budget: int = 250  # max pages from one domain ever committed to the
+    # (same-domain only, deduplicated via the normal TTL ledger).
+    crawl_linked_pages: bool = True
+    crawl_max_depth: int = 1           # 1 = follow links only from directly submitted pages
+    crawl_linked_pages_max: int = 10   # max links to enqueue from a single page
+    crawl_domain_page_budget: int = 100  # max pages from one domain ever committed to the
                                         # ledger; once reached no more pages from that
                                         # domain are enqueued until the TTL resets
 

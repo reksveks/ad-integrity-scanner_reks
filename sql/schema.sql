@@ -36,6 +36,9 @@ CREATE INDEX IF NOT EXISTS idx_scan_queue_terminal
     ON scan_queue (enqueued_at)
     WHERE status IN ('done', 'error');
 
+-- Crawl depth: 0 = submitted directly, n = discovered n links away.
+ALTER TABLE scan_queue ADD COLUMN IF NOT EXISTS depth INT NOT NULL DEFAULT 0;
+
 -- ---------------------------------------------------------------------------
 -- scan_ledger: dedup + tiered-TTL freshness for page-level results.
 -- ---------------------------------------------------------------------------

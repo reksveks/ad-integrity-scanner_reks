@@ -15,11 +15,12 @@ import random
 import asyncpg
 import httpx
 
-from app import fetch, queue, results, service, signals_static
+from app import fetch, ledger, queue, results, service, signals_static
 from app.config import Settings, get_settings
 from app.db import close_pool, init_pool
 from app.ledger import count_domain_pages
 from app.logging_config import configure_logging, get_logger, kv
+from app.normalize import normalize_url
 from app.queue import Job
 from app.scoring import score_static
 from app.workers import setup_signals
@@ -46,6 +47,31 @@ async def _scan_static(
     return score_static(signals), linked_pages
 
 
+async def _select_new_links(
+    pool: asyncpg.Pool, job: Job, links: list[str], limit: int
+) -> list[str]:
+    """Return up to *limit* links not already fresh in the ledger or in flight."""
+    selected: list[str] = []
+    seen = {job.url_hash}
+    async with pool.acquire() as conn:
+        for link in links:
+            if len(selected) >= limit:
+                break
+            try:
+                norm = normalize_url(link, strip_tracking=get_settings().strip_tracking_params)
+            except ValueError:
+                continue
+            if norm.url_hash in seen:
+                continue
+            seen.add(norm.url_hash)
+            if await ledger.get_fresh(conn, norm.url_hash) is not None:
+                continue
+            if await queue.find_inflight(conn, norm.url_hash) is not None:
+                continue
+            selected.append(norm.url)
+    return selected
+
+
 def _needs_render(settings: Settings) -> bool:
     if not settings.render_enabled:
         return False
@@ -63,7 +89,7 @@ async def _process(pool: asyncpg.Pool, client: httpx.AsyncClient, job: Job,
                     conn, scan_id=job.scan_id, url_hash=job.url_hash,
                     url=job.url, domain=job.domain, tier="render",
                 )
-        if settings.crawl_linked_pages and linked_pages:
+        if settings.crawl_linked_pages and linked_pages and job.depth < settings.crawl_max_depth:
             async with pool.acquire() as conn:
                 domain_count = await count_domain_pages(conn, job.domain)
             budget_remaining = settings.crawl_domain_page_budget - domain_count
@@ -71,10 +97,13 @@ async def _process(pool: asyncpg.Pool, client: httpx.AsyncClient, job: Job,
                 log.debug("domain page budget exhausted domain=%s count=%d budget=%d",
                           job.domain, domain_count, settings.crawl_domain_page_budget)
             else:
-                candidates = linked_pages[:min(settings.crawl_linked_pages_max, budget_remaining)]
+                candidates = await _select_new_links(
+                    pool, job, linked_pages,
+                    min(settings.crawl_linked_pages_max, budget_remaining),
+                )
                 for linked_url in candidates:
                     try:
-                        await service.submit_scan(pool, linked_url)
+                        await service.submit_scan(pool, linked_url, depth=job.depth + 1)
                     except Exception as crawl_err:  # noqa: BLE001
                         log.debug("linked-page enqueue skipped url=%r err=%r",
                                   linked_url, crawl_err)

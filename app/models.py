@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 class ScanRequest(BaseModel):
     # Cap length to bound memory / abuse; 2048 is a common practical URL limit.
     url: str = Field(..., min_length=1, max_length=2048, description="Complete page URL to scan.")
+    force: bool = Field(False, description="Re-scan even if a non-expired result exists.")
 
 
 class ScanAccepted(BaseModel):
