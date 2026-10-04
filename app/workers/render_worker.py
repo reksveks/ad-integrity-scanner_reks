@@ -27,6 +27,8 @@ from app.workers import setup_signals
 _stop = asyncio.Event()
 log = get_logger("worker.render")
 
+_RENDER_OVERHEAD_S = 60  # nav (25s) + Cloudflare wait (20s) + CMP/collect slack per sample
+
 
 async def _load_static_signals(conn: asyncpg.Connection, scan_id) -> dict:
     row = await conn.fetchrow("SELECT signals FROM scan_results WHERE scan_id = $1", scan_id)
@@ -70,14 +72,22 @@ async def _scan_render(pool: asyncpg.Pool, render_pool: RenderPool, job: Job) ->
     settings = get_settings()
     async with pool.acquire() as conn:
         signals = await _load_static_signals(conn, job.scan_id)
-    render_data = await render_page_sampled(
-        render_pool, job.url, dwell_ms=settings.render_dwell_ms, samples=settings.render_samples,
-        accept_consent=settings.render_accept_cmp,
-        admantx_token=settings.admantx_token,
-        admantx_max_attempts=settings.admantx_max_attempts,
-        doubleverify_token=settings.doubleverify_token,
-        doubleverify_max_attempts=settings.doubleverify_max_attempts,
-    )
+    # Two dwells per render plus headroom for nav/CMP/collect; scales with samples.
+    budget_s = max(1, settings.render_samples) * (2 * settings.render_dwell_ms / 1000 + _RENDER_OVERHEAD_S)
+    try:
+        render_data = await asyncio.wait_for(
+            render_page_sampled(
+                render_pool, job.url, dwell_ms=settings.render_dwell_ms, samples=settings.render_samples,
+                accept_consent=settings.render_accept_cmp,
+                admantx_token=settings.admantx_token,
+                admantx_max_attempts=settings.admantx_max_attempts,
+                doubleverify_token=settings.doubleverify_token,
+                doubleverify_max_attempts=settings.doubleverify_max_attempts,
+            ),
+            timeout=budget_s,
+        )
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"render exceeded {budget_s:.0f}s hard timeout") from None
     signals["render"] = render_data
     if render_data.get("ok"):
         _backfill_content(signals, render_data)
